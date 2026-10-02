@@ -89,6 +89,14 @@ body,.card,button,input,select,textarea,nav,.sticky,.bar{transition:background-c
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
+/* ================= StudyFlow configuration ================= */
+/* Paste your own Supabase project values below. Never put a Gemini/AI
+   provider key here or anywhere in this file — it stays server-side as
+   a Supabase Edge Function secret. */
+const SUPABASE_URL = 'https://rujkjjthptzrklewpsfx.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JO6fpODIEOo6r1WDRuUokA_iVwF-QTu';
+const SUPABASE_FUNCTION = SUPABASE_URL + '/functions/v1/generate-questions';
+/* ============================================================= */
 const $=s=>document.querySelector(s),uid=()=>Math.random().toString(36).slice(2,9);
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const TN={mcq:'MCQ',fill:'Fill in the blank',saq:'Short answer',essay:'Essay'};
@@ -161,33 +169,19 @@ function combinedSrc(ms,batch,b=14000){const pages=ms.flatMap(m=>m.pages.map(p=>
 function setMatIds(s){return s.matIds||(s.matId?[s.matId]:[])}
 
 /* ---------- AI (Claude via the page runtime; key never in this file) ---------- */
-const AI_MSG={
- not_granted:['StudyFlow needs your permission to use the AI service. Reload the page and accept the prompt.',0],
- sampling_disabled:["The AI service isn't available for your account right now.",0],
- not_declared:['The AI service needs the page reloaded to work again.',0],
- capability_disabled:['The AI service is unavailable in this view right now.',0],
- capability_removed:['Your Claude app needs updating to use AI generation here.',0],
- tools_unavailable:['The AI service is unavailable in this view right now.',0],
- images_unavailable:['Images are not supported in this view.',0],
- session_expired:['Your session expired — sign in again and retry.',0],
- rate_limited:['The AI service is busy right now. Wait a minute and try again.',0],
- prompt_too_large:['That material is too large for one request — try fewer files, or select less at once.',0],
- invalid_request:['StudyFlow sent a malformed request to the AI service.',0],
- transform_error:['StudyFlow sent a malformed request to the AI service.',0],
- queue_overflow:['Too many requests at once — wait a moment and try again.',0],
- refused:['The AI declined that request — try different material or fewer questions at a time.',0],
- image_rejected:['That image could not be processed.',0],
- cancelled:['Cancelled.',0],
- invalid_json:["the AI's answer wasn't valid data",1],
- empty_completion:['the AI returned no answer',1],
- upstream_error:['a temporary AI service error',1]
-};
-async function ai(prompt){const sample=window.claude&&await window.claude.use('sample');
- if(!sample){const e=new Error('AI is not available in this view. Open StudyFlow from your claude.ai artifact link while signed in.');e.code='unavailable';e.retryable=0;throw e}
- try{return await sample.json(prompt,{cache:false})}
- catch(err){const code=(err&&err.code)||'unknown';const hit=AI_MSG[code]||['an unexpected AI service error',1];
-  const e=new Error(hit[0]+' (code: '+code+')');e.code=code;e.retryable=hit[1];throw e}}
-async function aiRetry(prompt){try{return await ai(prompt)}catch(e){if(e.retryable)return await ai(prompt);throw e}}
+async function ai(prompt,material){
+ if(!SUPABASE_URL||SUPABASE_URL.includes('PASTE_')||!SUPABASE_PUBLISHABLE_KEY||SUPABASE_PUBLISHABLE_KEY.includes('PASTE_')){
+  const e=new Error('Add your Supabase Project URL and publishable key in the StudyFlow configuration.');e.retryable=false;throw e}
+ if(!material||!material.trim()){const e=new Error('No material text to send — the selected material looks empty.');e.retryable=false;throw e}
+ let r;
+ try{r=await fetch(SUPABASE_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({prompt,material})})}
+ catch(netErr){const e=new Error('Could not reach the AI service — check your internet connection and try again.');e.retryable=true;throw e}
+ const data=await r.json().catch(()=>null);
+ if(!r.ok){const msg=(data&&(data.error||data.details))||('Supabase AI request failed (HTTP '+r.status+').');
+  const e=new Error(msg);e.retryable=(r.status===429||r.status>=500);throw e}
+ if(!data||(!Array.isArray(data)&&!Array.isArray(data.questions))){const e=new Error('Supabase returned an unexpected response.');e.retryable=true;throw e}
+ return data}
+async function aiRetry(prompt,material){try{return await ai(prompt,material)}catch(e){if(e.retryable)return await ai(prompt,material);throw e}}
 function norm(q,def,diff){if(!q||typeof q.q!=='string'||q.q.length<8)return null;
  const t=TN[q.type]?q.type:def;const DL=['easy','medium','hard'];
  const o={type:t,q:q.q.trim(),explanation:q.explanation||'',takeaway:q.takeaway||'',source:q.source||'',topic:q.topic||'General',rubric:q.rubric||'',marks:t==='saq'?3:t==='essay'?10:1,difficulty:diff==='mixed'?(DL.includes(q.difficulty)?q.difficulty:'medium'):(diff||'medium')};
@@ -202,7 +196,9 @@ async function generate(){const ms=genMats;if(!ms.length)return materials();cons
  const diffTxt=diff==='mixed'?'Use a MIX of difficulty levels across these questions — roughly equal parts easy, medium and hard. Set each question\'s "difficulty" field accordingly.':diff+' difficulty. Set each question\'s "difficulty" field to "'+diff+'".';
  try{for(let b=0;b<Math.ceil(n/cap)+2&&all.length<n;b++){busy('Generating questions… ('+all.length+'/'+n+')');
   const want=Math.min(cap,n-all.length),ti=type==='mixed'?'Use a mix of "mcq" (about half), "fill", "saq" and "essay".':'Every question must have type "'+type+'".';
-  const r=await aiRetry('You write exam questions ONLY from the study material in <material>. Never use outside facts; if the material does not support a question, do not write it.\nWrite '+want+' questions at '+diffTxt+' '+ti+' Vary styles: recall, concept, comparison, application, scenario. No duplicates or near-duplicates. For MCQs, put the correct option in a random position — do not favor any particular letter.'+(all.length?' Already written (avoid): '+all.map(q=>q.q.slice(0,50)).join(' | '):'')+'\nReturn ONLY JSON: {"questions":[{"type":"mcq|fill|saq|essay","q":"","options":["..","..","..",".."],"answer":"mcq: index 0-3; fill: array of accepted strings; saq/essay: model answer text","difficulty":"easy|medium|hard","rubric":"marking scheme (saq/essay)","explanation":"","takeaway":"","source":"e.g. Page 3","topic":""}]}\n<material>\n'+combinedSrc(ms,b)+'\n</material>');
+  const material=combinedSrc(ms,b);
+  const prompt='You write exam questions ONLY from the study material provided separately below. Never use outside facts; if the material does not support a question, do not write it.\nWrite '+want+' questions at '+diffTxt+' '+ti+' Vary styles: recall, concept, comparison, application, scenario. No duplicates or near-duplicates. For MCQs, put the correct option in a random position — do not favor any particular letter.'+(all.length?' Already written (avoid): '+all.map(q=>q.q.slice(0,50)).join(' | '):'')+'\nReturn ONLY JSON: {"questions":[{"type":"mcq|fill|saq|essay","q":"","options":["..","..","..",".."],"answer":"mcq: index 0-3; fill: array of accepted strings; saq/essay: model answer text","difficulty":"easy|medium|hard","rubric":"marking scheme (saq/essay)","explanation":"","takeaway":"","source":"e.g. Page 3","topic":""}]}';
+  const r=await aiRetry(prompt,material);
   for(const q of (Array.isArray(r)?r:r.questions||[])){const o=norm(q,type==='mixed'?'mcq':type,diff);if(!o)continue;if(type!=='mixed'&&o.type!==type)continue;const k=o.q.toLowerCase().replace(/\W+/g,' ').slice(0,60);if(seen.has(k))continue;seen.add(k);
    if(o.type==='mcq'){if(!bag.length){bag=[0,1,2,3];for(let i=3;i>0;i--){const j=Math.floor(Math.random()*(i+1));[bag[i],bag[j]]=[bag[j],bag[i]]}}
     const slot=bag.pop(),correct=o.options[o.answer],rest=o.options.filter((_,idx)=>idx!==o.answer);
@@ -216,11 +212,12 @@ async function generate(){const ms=genMats;if(!ms.length)return materials();cons
  const title=ms.length>1?ms.length+' materials — '+(TN[type]||'Mixed'):ms[0].title+' — '+(TN[type]||'Mixed');
  const subject=[...new Set(ms.map(x=>x.subject))].join(' + ');
  const set={id:uid(),title,matIds:ms.map(x=>x.id),subject,date:Date.now(),mode,mins,qs:all,rand,attempts:[]};S.sets.unshift(set);save();go('practice')}
-async function genCards(id){const m=S.materials.find(x=>x.id===id);busy('Generating flashcards…');
- try{const r=await aiRetry('Make 15 flashcards ONLY from the study material in <material>. Return ONLY JSON: {"cards":[{"front":"","back":"","source":"e.g. Page 3","topic":""}]}\n<material>\n'+srcText(m,0)+'\n</material>');
-  const cs=(Array.isArray(r)?r:r.cards||[]).filter(c=>c&&c.front&&c.back).map(c=>({id:uid(),matId:id,front:String(c.front),back:String(c.back),source:c.source||'',topic:c.topic||'General',status:'new'}));
-  if(!cs.length)throw new Error('no valid flashcards came back');S.cards=S.cards.filter(c=>c.matId!==id).concat(cs);save();busy(false);go('deck',id)}
- catch(e){busy(false);toast('StudyFlow couldn\'t generate flashcards: '+e.message+'.')}}
+async function genCards(id){
+ /* The deployed Supabase Edge Function (generate-questions) is shaped for exam
+    questions, not flashcards. Rather than feeding it a flashcard prompt and risking
+    malformed/garbled cards, this stays isolated until a flashcard-shaped backend
+    (e.g. a generate-flashcards function) exists. */
+ toast('Flashcard generation needs a backend update — it isn\'t wired to the new AI service yet. Your existing flashcards still work.');}
 
 /* ---------- marking & running ---------- */
 const nz=s=>String(s).toLowerCase().replace(/[^a-z0-9]+/g,'');
@@ -298,7 +295,7 @@ function tOpts(sel){return TL.map(m=>'<option value="'+m+'" '+(String(m)===Strin
 function readMins(id,cid){const v=$('#'+id).value;return v==='c'?Math.min(300,Math.max(1,parseInt($('#'+cid).value)||S.prefs.mins)):+v}
 function gen(){const ms=genMats.filter(m=>S.materials.includes(m));if(!ms.length)return materials();const p=S.prefs;
  return '<div class="step">Material › <b>Set up</b> › Start › Results</div><h1>Generate questions</h1><div class="card"><b>'+(ms.length>1?ms.length+' materials selected':esc(ms[0].title))+'</b>'+(ms.length>1?'<div class="mu">'+ms.map(x=>esc(x.title)).join(', ')+'</div>':'')+'<label>Question type</label><select id="gt"><option value="mcq">MCQ</option><option value="fill">Fill in the blank</option><option value="saq">Short answer (SAQ)</option><option value="essay">Essay</option><option value="mixed">Mixed</option></select>'+
- '<label>Number of questions</label><select id="gn" onchange="$(\'#gc\').style.display=this.value===\'c\'?\'block\':\'none\'">'+[5,10,20,30,40,50,75,100].map(n=>'<option '+(n===p.n?'selected':'')+'>'+n+'</option>').join('')+'<option value="c">Custom…</option></select><input id="gc" type="number" min="1" max="150" placeholder="1–150" style="display:none;margin-top:6px">'+
+ '<label>Number of questions</label><select id="gn" onchange="$(\'#gc\').style.display=this.value===\'c\'?\'block\':\'none\'">'+[5,10,20,30,40,50,75,100,150].map(n=>'<option '+(n===p.n?'selected':'')+'>'+n+'</option>').join('')+'<option value="c">Custom…</option></select><input id="gc" type="number" min="1" max="150" placeholder="1–150" style="display:none;margin-top:6px">'+
  '<label>Mode</label><select id="gm"><option value="study" '+(p.mode==='study'?'selected':'')+'>Study (instant feedback)</option><option value="cbt" '+(p.mode==='cbt'?'selected':'')+'>CBT (timed, no answers)</option><option value="mock" '+(p.mode==='mock'?'selected':'')+'>Mock exam</option></select>'+
  '<label>Timer</label><select id="gtm" onchange="$(\'#gtc\').style.display=this.value===\'c\'?\'block\':\'none\'">'+tOpts(p.mode==='study'?'0':TL.includes(p.mins)?String(p.mins):'20')+'</select><input id="gtc" type="number" min="1" max="300" placeholder="Minutes" style="display:none;margin-top:6px"><label>Difficulty</label><select id="gd"><option>easy</option><option selected>medium</option><option>hard</option><option value="mixed">Mixed (easy–hard)</option></select><details><summary>More options</summary><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="grand" style="width:auto"> Randomize question order when studying</label></details>'+
  '<p><button class="p" onclick="generate()">Generate</button> <button onclick="go(\'materials\')">Cancel</button></p><p class="mu">Questions are written from your material only. Larger sets take a few minutes.</p></div>'}

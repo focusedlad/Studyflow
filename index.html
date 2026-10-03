@@ -175,7 +175,7 @@ async function ai(prompt,material){
  if(!material||!material.trim()){const e=new Error('No material text to send — the selected material looks empty.');e.retryable=false;throw e}
  let r;
  try{r=await fetch(SUPABASE_FUNCTION,{method:'POST',headers:{'Content-Type':'application/json','apikey':SUPABASE_PUBLISHABLE_KEY},body:JSON.stringify({prompt,material})})}
- catch(netErr){const e=new Error('Could not reach the AI service — check your internet connection and try again.');e.retryable=true;throw e}
+ catch(netErr){const e=new Error('Could not reach the AI service — check your internet connection and try again. ('+netErr.message+')');e.retryable=true;throw e}
  const data=await r.json().catch(()=>null);
  if(!r.ok){const msg=(data&&(data.error||data.details))||('Supabase AI request failed (HTTP '+r.status+').');
   const e=new Error(msg);e.retryable=(r.status===429||r.status>=500);throw e}
